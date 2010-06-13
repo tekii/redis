@@ -580,6 +580,8 @@ typedef struct iojob {
 } iojob;
 
 /*================================ Prototypes =============================== */
+char *redisGitSHA1(void);
+char *redisGitDirty(void);
 
 static void freeStringObject(robj *o);
 static void freeListObject(robj *o);
@@ -4486,18 +4488,26 @@ static robj *rdbLoadObject(int type, FILE *fp) {
             /* If we are using a zipmap and there are too big values
              * the object is converted to real hash table encoding. */
             if (o->encoding != REDIS_ENCODING_HT &&
-               (sdslen(key->ptr) > server.hash_max_zipmap_value ||
-                sdslen(val->ptr) > server.hash_max_zipmap_value))
+               ((key->encoding == REDIS_ENCODING_RAW &&
+                sdslen(key->ptr) > server.hash_max_zipmap_value) ||
+                (val->encoding == REDIS_ENCODING_RAW &&
+                sdslen(val->ptr) > server.hash_max_zipmap_value)))
             {
                     convertToRealHash(o);
             }
 
             if (o->encoding == REDIS_ENCODING_ZIPMAP) {
                 unsigned char *zm = o->ptr;
+                robj *deckey, *decval;
 
-                zm = zipmapSet(zm,key->ptr,sdslen(key->ptr),
-                                  val->ptr,sdslen(val->ptr),NULL);
+                /* We need raw string objects to add them to the zipmap */
+                deckey = getDecodedObject(key);
+                decval = getDecodedObject(val);
+                zm = zipmapSet(zm,deckey->ptr,sdslen(deckey->ptr),
+                                  decval->ptr,sdslen(decval->ptr),NULL);
                 o->ptr = zm;
+                decrRefCount(deckey);
+                decrRefCount(decval);
                 decrRefCount(key);
                 decrRefCount(val);
             } else {
@@ -7989,8 +7999,8 @@ static sds genRedisInfoString(void) {
         "vm_enabled:%d\r\n"
         "role:%s\r\n"
         ,REDIS_VERSION,
-        REDIS_GIT_SHA1,
-        strtol(REDIS_GIT_DIRTY,NULL,10) > 0,
+        redisGitSHA1(),
+        strtol(redisGitDirty(),NULL,10) > 0,
         (sizeof(long) == 8) ? "64" : "32",
         aeGetApiName(),
         (long) getpid(),
@@ -11674,7 +11684,7 @@ static void daemonize(void) {
 
 static void version() {
     printf("Redis server version %s (%s:%d)\n", REDIS_VERSION,
-        REDIS_GIT_SHA1, atoi(REDIS_GIT_DIRTY) > 0);
+        redisGitSHA1(), atoi(redisGitDirty()) > 0);
     exit(0);
 }
 

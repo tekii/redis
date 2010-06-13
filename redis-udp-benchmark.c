@@ -61,7 +61,7 @@ int main(void) {
     while(1) {
         sendUDPRequestVector(s,1000,0,0,argv,1);
         c++;
-        if (c == 1000000) break;
+        if (c == 10000) break;
     }
     return 0;
 }

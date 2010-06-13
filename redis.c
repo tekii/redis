@@ -7980,6 +7980,7 @@ static sds genRedisInfoString(void) {
         "bgrewriteaof_in_progress:%d\r\n"
         "total_connections_received:%lld\r\n"
         "total_commands_processed:%lld\r\n"
+        "udp_dropped_replies:%lld\r\n"
         "expired_keys:%lld\r\n"
         "hash_max_zipmap_entries:%zu\r\n"
         "hash_max_zipmap_value:%zu\r\n"
@@ -8006,6 +8007,7 @@ static sds genRedisInfoString(void) {
         server.bgrewritechildpid != -1,
         server.stat_numconnections,
         server.stat_numcommands,
+        server.stat_udp_dropped_replies,
         server.stat_expiredkeys,
         server.hash_max_zipmap_entries,
         server.hash_max_zipmap_value,

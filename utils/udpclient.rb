@@ -42,8 +42,8 @@ class UDPRedisClient
 end
 
 udp = UDPRedisClient.new("127.0.0.1",6379)
-udp.sendRequestPacket(0,["ping"])
-exit
+#udp.sendRequestPacket(0,["ping"])
+#exit
 (0..1000000).each{|n|
 #    udp.sendRequestPacket(0,["ping"])
     udp.sendRequestPacket(0,["set","foo#{n}",10])

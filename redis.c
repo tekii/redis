@@ -3080,7 +3080,6 @@ static void udpSendCommandReply(int fd, struct sockaddr *sa, socklen_t salen, ud
     redisClient *c = server.udpfc;
     listNode *ln;
 
-    glueReplyBuffersIfNeeded(c);
     if (listLength(c->reply) == 1) {
         ln = listFirst(c->reply);
         robj *o = ln->value;

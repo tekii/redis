@@ -41,11 +41,13 @@ class UDPRedisClient
     end
 end
 
+#udp = UDPRedisClient.new("192.168.1.105",6379)
 udp = UDPRedisClient.new("127.0.0.1",6379)
 #udp.sendRequestPacket(0,["ping"])
 #exit
 (0..1000000).each{|n|
-#    udp.sendRequestPacket(0,["ping"])
-    udp.sendRequestPacket(0,["set","foo#{n}",10])
+    udp.sendRequestPacket(0,["ping"])
+#    udp.sendRequestPacket(0,["set","foo#{n}",10])
+    udp.recvReplyPacket
 }
 # puts udp.recvReplyPacket.inspect

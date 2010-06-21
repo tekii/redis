@@ -17,7 +17,7 @@ DEBUG?= -g -rdynamic -ggdb
 
 OBJ = adlist.o ae.o anet.o dict.o redis.o sds.o zmalloc.o lzf_c.o lzf_d.o pqsort.o zipmap.o sha1.o ziplist.o release.o
 BENCHOBJ = ae.o anet.o redis-benchmark.o sds.o adlist.o zmalloc.o
-UDPBENCHOBJ = anet.o redis-udp-benchmark.o sds.o zmalloc.o
+UDPBENCHOBJ = anet.o redis-udp-benchmark.o sds.o zmalloc.o ae.o
 CLIOBJ = anet.o sds.o adlist.o redis-cli.o zmalloc.o linenoise.o
 CHECKDUMPOBJ = redis-check-dump.o lzf_c.o lzf_d.o
 CHECKAOFOBJ = redis-check-aof.o

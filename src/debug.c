@@ -286,6 +286,13 @@ void debugCommand(redisClient *c) {
 
         d = sdscatlen(d,"\r\n",2);
         addReplySds(c,d);
+    } else if (!strcasecmp(c->argv[1]->ptr,"fork") && c->argc == 2) {
+        if (fork() == 0) {
+            /* The child will wait forever... */
+            while(1) sleep(1);
+        } else {
+            addReply(c,shared.ok);
+        }
     } else {
         addReplySds(c,sdsnew(
             "-ERR Syntax error, try DEBUG [SEGFAULT|OBJECT <key>|SWAPIN <key>|SWAPOUT <key>|RELOAD]\r\n"));

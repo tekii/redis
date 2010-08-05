@@ -60,7 +60,17 @@ void addReply(redisClient *c, robj *obj) {
         aeCreateFileEvent(server.el, c->fd, AE_WRITABLE,
         sendReplyToClient, c) == AE_ERR) return;
 
-    if (server.vm_enabled && obj->storage != REDIS_VM_MEMORY) {
+    if (server.copyreply) {
+        robj *copy;
+
+        if (obj->encoding == REDIS_ENCODING_RAW) {
+            copy = dupStringObject(obj);
+        } else {
+            copy = getDecodedObject(obj);
+        }
+        listAddNodeTail(c->reply,copy);
+        return;
+    } else if (server.vm_enabled && obj->storage != REDIS_VM_MEMORY) {
         obj = dupStringObject(obj);
         obj->refcount = 0; /* getDecodedObject() will increment the refcount */
     }

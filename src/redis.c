@@ -729,6 +729,7 @@ void initServerConfig() {
     server.requirepass = NULL;
     server.rdbcompression = 1;
     server.activerehashing = 1;
+    server.copyreply = 0;
     server.maxclients = 0;
     server.blpop_blocked_clients = 0;
     server.maxmemory = 0;

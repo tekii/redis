@@ -371,6 +371,7 @@ struct redisServer {
     char *requirepass;
     int rdbcompression;
     int activerehashing;
+    int copyreply;  /* Copy objects in addReply to avoid COW business? */
     /* Replication related */
     int isslave;
     char *masterauth;

@@ -8,6 +8,8 @@
 #include <sys/resource.h>
 #include <sys/wait.h>
 
+void aofUpdateCurrentSize(void);
+
 /* Called when the user switches from "appendonly yes" to "appendonly no"
  * at runtime using the CONFIG command. */
 void stopAppendOnly(void) {
@@ -19,15 +21,15 @@ void stopAppendOnly(void) {
     server.appendseldb = -1;
     server.appendonly = 0;
     /* rewrite operation in progress? kill it, wait child exit */
-    if (server.bgsavechildpid != -1) {
+    if (server.bgrewritechildpid != -1) {
         int statloc;
 
-        if (kill(server.bgsavechildpid,SIGKILL) != -1)
+        if (kill(server.bgrewritechildpid,SIGKILL) != -1)
             wait3(&statloc,0,NULL);
         /* reset the buffer accumulating changes while the child saves */
         sdsfree(server.bgrewritebuf);
         server.bgrewritebuf = sdsempty();
-        server.bgsavechildpid = -1;
+        server.bgrewritechildpid = -1;
     }
 }
 
@@ -82,6 +84,7 @@ void flushAppendOnlyFile(void) {
     }
     sdsfree(server.aofbuf);
     server.aofbuf = sdsempty();
+    server.appendonly_current_size += nwritten;
 
     /* Don't Fsync if no-appendfsync-on-rewrite is set to yes and we have
      * childs performing heavy I/O on disk. */
@@ -220,8 +223,11 @@ int loadAppendOnlyFile(char *filename) {
     int appendonly = server.appendonly;
     long loops = 0;
 
-    if (redis_fstat(fileno(fp),&sb) != -1 && sb.st_size == 0)
+    if (fp && redis_fstat(fileno(fp),&sb) != -1 && sb.st_size == 0) {
+        server.appendonly_current_size = 0;
+        fclose(fp);
         return REDIS_ERR;
+    }
 
     if (fp == NULL) {
         redisLog(REDIS_WARNING,"Fatal error: can't open the append log file for reading: %s",strerror(errno));
@@ -282,10 +288,14 @@ int loadAppendOnlyFile(char *filename) {
 
         /* The fake client should not have a reply */
         redisAssert(fakeClient->bufpos == 0 && listLength(fakeClient->reply) == 0);
+        /* The fake client should never get blocked */
+        redisAssert((fakeClient->flags & REDIS_BLOCKED) == 0);
 
-        /* Clean up, ready for the next command */
-        for (j = 0; j < argc; j++) decrRefCount(argv[j]);
-        zfree(argv);
+        /* Clean up. Command code may have changed argv/argc so we use the
+         * argv/argc of the client instead of the local variables. */
+        for (j = 0; j < fakeClient->argc; j++)
+            decrRefCount(fakeClient->argv[j]);
+        zfree(fakeClient->argv);
 
         /* Handle swapping while loading big datasets when VM is on */
         force_swapout = 0;
@@ -307,6 +317,8 @@ int loadAppendOnlyFile(char *filename) {
     freeFakeClient(fakeClient);
     server.appendonly = appendonly;
     stopLoading();
+    aofUpdateCurrentSize();
+    server.auto_aofrewrite_base_size = server.appendonly_current_size;
     return REDIS_OK;
 
 readerr:
@@ -344,7 +356,7 @@ int rewriteAppendOnlyFile(char *filename) {
         redisDb *db = server.db+j;
         dict *d = db->dict;
         if (dictSize(d) == 0) continue;
-        di = dictGetIterator(d);
+        di = dictGetSafeIterator(d);
         if (!di) {
             fclose(fp);
             return REDIS_ERR;
@@ -450,21 +462,55 @@ int rewriteAppendOnlyFile(char *filename) {
                 }
             } else if (o->type == REDIS_ZSET) {
                 /* Emit the ZADDs needed to rebuild the sorted set */
-                zset *zs = o->ptr;
-                dictIterator *di = dictGetIterator(zs->dict);
-                dictEntry *de;
+                char cmd[]="*4\r\n$4\r\nZADD\r\n";
 
-                while((de = dictNext(di)) != NULL) {
-                    char cmd[]="*4\r\n$4\r\nZADD\r\n";
-                    robj *eleobj = dictGetEntryKey(de);
-                    double *score = dictGetEntryVal(de);
+                if (o->encoding == REDIS_ENCODING_ZIPLIST) {
+                    unsigned char *zl = o->ptr;
+                    unsigned char *eptr, *sptr;
+                    unsigned char *vstr;
+                    unsigned int vlen;
+                    long long vll;
+                    double score;
 
-                    if (fwrite(cmd,sizeof(cmd)-1,1,fp) == 0) goto werr;
-                    if (fwriteBulkObject(fp,&key) == 0) goto werr;
-                    if (fwriteBulkDouble(fp,*score) == 0) goto werr;
-                    if (fwriteBulkObject(fp,eleobj) == 0) goto werr;
+                    eptr = ziplistIndex(zl,0);
+                    redisAssert(eptr != NULL);
+                    sptr = ziplistNext(zl,eptr);
+                    redisAssert(sptr != NULL);
+
+                    while (eptr != NULL) {
+                        redisAssert(ziplistGet(eptr,&vstr,&vlen,&vll));
+                        score = zzlGetScore(sptr);
+
+                        if (fwrite(cmd,sizeof(cmd)-1,1,fp) == 0) goto werr;
+                        if (fwriteBulkObject(fp,&key) == 0) goto werr;
+                        if (fwriteBulkDouble(fp,score) == 0) goto werr;
+                        if (vstr != NULL) {
+                            if (fwriteBulkString(fp,(char*)vstr,vlen) == 0)
+                                goto werr;
+                        } else {
+                            if (fwriteBulkLongLong(fp,vll) == 0)
+                                goto werr;
+                        }
+                        zzlNext(zl,&eptr,&sptr);
+                    }
+                } else if (o->encoding == REDIS_ENCODING_SKIPLIST) {
+                    zset *zs = o->ptr;
+                    dictIterator *di = dictGetIterator(zs->dict);
+                    dictEntry *de;
+
+                    while((de = dictNext(di)) != NULL) {
+                        robj *eleobj = dictGetEntryKey(de);
+                        double *score = dictGetEntryVal(de);
+
+                        if (fwrite(cmd,sizeof(cmd)-1,1,fp) == 0) goto werr;
+                        if (fwriteBulkObject(fp,&key) == 0) goto werr;
+                        if (fwriteBulkDouble(fp,*score) == 0) goto werr;
+                        if (fwriteBulkObject(fp,eleobj) == 0) goto werr;
+                    }
+                    dictReleaseIterator(di);
+                } else {
+                    redisPanic("Unknown sorted set encoding");
                 }
-                dictReleaseIterator(di);
             } else if (o->type == REDIS_HASH) {
                 char cmd[]="*4\r\n$4\r\nHSET\r\n";
 
@@ -551,13 +597,15 @@ werr:
  */
 int rewriteAppendOnlyFileBackground(void) {
     pid_t childpid;
+    long long start;
 
     if (server.bgrewritechildpid != -1) return REDIS_ERR;
     if (server.vm_enabled) waitEmptyIOJobsQueue();
+    start = ustime();
     if ((childpid = fork()) == 0) {
-        /* Child */
         char tmpfile[256];
 
+        /* Child */
         if (server.vm_enabled) vmReopenSwapFile();
         if (server.ipfd > 0) close(server.ipfd);
         if (server.sofd > 0) close(server.sofd);
@@ -569,6 +617,7 @@ int rewriteAppendOnlyFileBackground(void) {
         }
     } else {
         /* Parent */
+        server.stat_fork_time = ustime()-start;
         if (childpid == -1) {
             redisLog(REDIS_WARNING,
                 "Can't rewrite append only file in background: fork: %s",
@@ -592,9 +641,10 @@ int rewriteAppendOnlyFileBackground(void) {
 void bgrewriteaofCommand(redisClient *c) {
     if (server.bgrewritechildpid != -1) {
         addReplyError(c,"Background append only file rewriting already in progress");
-        return;
-    }
-    if (rewriteAppendOnlyFileBackground() == REDIS_OK) {
+    } else if (server.bgsavechildpid != -1) {
+        server.aofrewrite_scheduled = 1;
+        addReplyStatus(c,"Background append only file rewriting scheduled");
+    } else if (rewriteAppendOnlyFileBackground() == REDIS_OK) {
         addReplyStatus(c,"Background append only file rewriting started");
     } else {
         addReply(c,shared.err);
@@ -606,6 +656,21 @@ void aofRemoveTempFile(pid_t childpid) {
 
     snprintf(tmpfile,256,"temp-rewriteaof-bg-%d.aof", (int) childpid);
     unlink(tmpfile);
+}
+
+/* Update the server.appendonly_current_size filed explicitly using stat(2)
+ * to check the size of the file. This is useful after a rewrite or after
+ * a restart, normally the size is updated just adding the write length
+ * to the current lenght, that is much faster. */
+void aofUpdateCurrentSize(void) {
+    struct redis_stat sb;
+
+    if (redis_fstat(server.appendfd,&sb) == -1) {
+        redisLog(REDIS_WARNING,"Unable to check the AOF length: %s",
+            strerror(errno));
+    } else {
+        server.appendonly_current_size = sb.st_size;
+    }
 }
 
 /* A background append only file rewriting (BGREWRITEAOF) terminated its work.
@@ -651,6 +716,8 @@ void backgroundRewriteDoneHandler(int statloc) {
             if (server.appendfsync != APPENDFSYNC_NO) aof_fsync(fd);
             server.appendseldb = -1; /* Make sure it will issue SELECT */
             redisLog(REDIS_NOTICE,"The new append only file was selected for future appends.");
+            aofUpdateCurrentSize();
+            server.auto_aofrewrite_base_size = server.appendonly_current_size;
         } else {
             /* If append only is disabled we just generate a dump in this
              * format. Why not? */
